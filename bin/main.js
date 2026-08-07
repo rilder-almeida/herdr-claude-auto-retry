@@ -110,8 +110,12 @@ async function watchAll() {
   const herdr = createHerdr();
   const panes = await herdr.listClaudePanes();
   let spawned = 0;
+  const clearedWorkspaces = new Set();
   for (const pane of panes) {
-    if (isWorkspaceDisarmed(pane.workspace_id)) continue;
+    if (pane.workspace_id && isWorkspaceDisarmed(pane.workspace_id) && !clearedWorkspaces.has(pane.workspace_id)) {
+      setWorkspaceDisarmed(pane.workspace_id, false);
+      clearedWorkspaces.add(pane.workspace_id);
+    }
     if (spawnMonitor(pane) === 'spawned') spawned++;
   }
   process.stdout.write(`Claude panes found: ${panes.length}. Monitors starting: ${spawned} (others already running or skipped).\n`);
@@ -138,9 +142,24 @@ async function arm() {
   }
 
   const logger = createLogger();
-  const spaceLabel = workspaceId || paneId;
+
+  // No workspace context: there's no space to toggle, so stay idempotent like
+  // every other action here (matches the pre-toggle single-pane behavior).
+  if (!workspaceId) {
+    const pane = panes[0];
+    const outcome = spawnMonitor(pane);
+    if (outcome === 'spawned') logger.info(`${paneHandle(pane)}  armed; starting monitor`);
+    const msg = {
+      spawned: `Armed auto-retry monitor on pane ${pane.pane_id}.`,
+      'already-running': `Pane ${pane.pane_id} is already being monitored.`,
+      'ignored-self': `Pane ${pane.pane_id} is the plugin's own pane; not monitored.`,
+    };
+    process.stdout.write(`${msg[outcome] || msg.spawned}\n`);
+    return;
+  }
+
   if (panes.some((p) => hasActiveMonitor(p.terminal_id))) {
-    if (workspaceId) setWorkspaceDisarmed(workspaceId, true);
+    setWorkspaceDisarmed(workspaceId, true);
     let stopped = 0;
     for (const p of panes) {
       const rec = readRecord(p.terminal_id);
@@ -149,15 +168,15 @@ async function arm() {
       }
       removeRecord(p.terminal_id);
     }
-    logger.info(`space ${spaceLabel}  disarmed (${stopped} monitor(s) stopped); won't auto-rearm until toggled on again`);
+    logger.info(`space ${workspaceId}  disarmed (${stopped} monitor(s) stopped); won't auto-rearm until toggled on again`);
     process.stdout.write(`Disarmed auto-retry for this space (${stopped} monitor(s) stopped). It will stay off until you toggle it back on.\n`);
   } else {
-    if (workspaceId) setWorkspaceDisarmed(workspaceId, false);
+    setWorkspaceDisarmed(workspaceId, false);
     let spawned = 0;
     for (const p of panes) {
       if (spawnMonitor(p) === 'spawned') spawned++;
     }
-    logger.info(`space ${spaceLabel}  armed (${spawned} monitor(s) started)`);
+    logger.info(`space ${workspaceId}  armed (${spawned} monitor(s) started)`);
     process.stdout.write(`Armed auto-retry for this space (${spawned} monitor(s) started).\n`);
   }
 }

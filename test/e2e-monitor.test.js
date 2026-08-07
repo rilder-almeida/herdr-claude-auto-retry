@@ -273,3 +273,61 @@ test('a disarmed space stays off across later automatic detections, and arm turn
     }
   }
 });
+
+// Regression: `arm` used to toggle even without a workspace, so a second call
+// on the fallback path silently disarmed instead of staying a safe no-op.
+test('arm without HERDR_WORKSPACE_ID stays idempotent (no toggle) on repeat calls', async () => {
+  const t = setup();
+  t.setState({
+    panes: [{ pane_id: 'w1:p1', terminal_id: 't-a', agent: 'claude', agent_status: 'idle', cwd: '/proj/a' }],
+    read: 'normal prompt',
+  });
+  const armEnv = { ...t.procEnv, HERDR_PANE_ID: 'w1:p1' };
+  delete armEnv.HERDR_WORKSPACE_ID; // setup()'s procEnv inherits process.env; a real HERDR_WORKSPACE_ID may already be set if the test runner itself runs inside a herdr pane
+
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  const firstLock = await waitFor(() => (t.locks().length === 1 ? t.locks() : null));
+  assert.ok(firstLock, 'first arm call should spawn a monitor');
+
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(t.locks().length, 1, 'a second arm call without a workspace must not disarm the pane');
+
+  for (const f of t.locks()) {
+    try {
+      process.kill(JSON.parse(readFileSync(join(t.procEnv.HERDR_PLUGIN_STATE_DIR, 'monitors', f), 'utf8')).pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
+});
+
+// Regression: watch-all documented as clearing disarmed spaces, but the code
+// skipped them entirely, leaving the documented "escape hatch" a no-op.
+test('watch-all re-arms a previously disarmed space', async () => {
+  const t = setup();
+  t.setState({
+    panes: [{ pane_id: 'w1:p1', terminal_id: 't-a', agent: 'claude', agent_status: 'idle', cwd: '/proj/a', workspace_id: 'w1' }],
+    read: 'normal prompt',
+  });
+  const armEnv = { ...t.procEnv, HERDR_PANE_ID: 'w1:p1', HERDR_WORKSPACE_ID: 'w1' };
+
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  await waitFor(() => t.locks().length === 1);
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  await waitFor(() => t.locks().length === 0);
+
+  await new Promise((resolve) => {
+    spawn(process.execPath, [MAIN, 'watch-all'], { env: t.procEnv, stdio: 'ignore' }).on('exit', resolve);
+  });
+  const rearmed = await waitFor(() => t.locks().length === 1);
+  assert.ok(rearmed, 'watch-all must re-arm a space that was previously disarmed');
+
+  for (const f of t.locks()) {
+    try {
+      process.kill(JSON.parse(readFileSync(join(t.procEnv.HERDR_PLUGIN_STATE_DIR, 'monitors', f), 'utf8')).pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
+});

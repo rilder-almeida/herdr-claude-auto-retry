@@ -17,6 +17,39 @@ function disarmedPath() {
   return join(stateDir(), 'disarmed.json');
 }
 
+function disarmedLockPath() {
+  return join(stateDir(), '.disarmed.lock');
+}
+
+// Same exclusive-create-with-retry primitive claimSlot uses for monitor
+// records, applied here as a mutex around the disarmed-list read-modify-write
+// so two concurrent `arm` toggles (e.g. a fast double keypress) can't race and
+// silently drop one of the writes.
+function withDisarmedLock(fn) {
+  mkdirSync(stateDir(), { recursive: true });
+  const lockPath = disarmedLockPath();
+  let acquired = false;
+  for (let attempt = 0; attempt < 50 && !acquired; attempt++) {
+    try {
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx' });
+      acquired = true;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
+  }
+  if (!acquired) {
+    // Stale lock from a crashed process; steal it rather than fail the toggle.
+    try { unlinkSync(lockPath); } catch {}
+    writeFileSync(lockPath, String(process.pid), { flag: 'w' });
+  }
+  try {
+    return fn();
+  } finally {
+    try { unlinkSync(lockPath); } catch {}
+  }
+}
+
 function readDisarmedWorkspaces() {
   try {
     const list = JSON.parse(readFileSync(disarmedPath(), 'utf-8'));
@@ -37,10 +70,11 @@ export function isWorkspaceDisarmed(workspaceId) {
 
 export function setWorkspaceDisarmed(workspaceId, disarmed) {
   if (!workspaceId) return;
-  mkdirSync(stateDir(), { recursive: true });
-  const set = new Set(readDisarmedWorkspaces());
-  if (disarmed) set.add(workspaceId); else set.delete(workspaceId);
-  writeFileSync(disarmedPath(), JSON.stringify([...set], null, 2));
+  withDisarmedLock(() => {
+    const set = new Set(readDisarmedWorkspaces());
+    if (disarmed) set.add(workspaceId); else set.delete(workspaceId);
+    writeFileSync(disarmedPath(), JSON.stringify([...set], null, 2));
+  });
 }
 
 export function isAlive(pid) {
