@@ -33,11 +33,11 @@ description = "Attach an auto-retry monitor to every running Claude Code pane."
 contexts = ["global"]
 command = ["/bin/sh", "launch.sh", "watch-all"]
 
-# Arm the focused pane explicitly.
+# Toggle auto-retry for every Claude Code pane in the focused space.
 [[actions]]
 id = "arm"
-title = "Claude Auto Retry: watch this pane"
-description = "Attach an auto-retry monitor to the focused Claude Code pane."
+title = "Claude Auto Retry: toggle this space"
+description = "Arm every Claude Code pane in the focused space, or disarm them if any is already monitored."
 contexts = ["pane"]
 command = ["/bin/sh", "launch.sh", "arm"]
 

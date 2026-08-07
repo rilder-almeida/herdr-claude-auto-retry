@@ -25,11 +25,13 @@ A herdr event hook starts a small detached monitor for each Claude pane. The mon
 
 ```bash
 herdr plugin action invoke claude-auto-retry.watch-all   # watch all Claude panes
-herdr plugin action invoke claude-auto-retry.arm         # watch the focused pane
+herdr plugin action invoke claude-auto-retry.arm         # toggle every Claude pane in the focused space
 herdr plugin action invoke claude-auto-retry.status      # active monitors + recent activity
 herdr plugin action invoke claude-auto-retry.stop        # stop all monitors
 herdr plugin action invoke claude-auto-retry.logs        # recent log lines
 ```
+
+`arm` is a per-space toggle, not a one-way switch: the first call arms every Claude pane in the space you're focused in (`HERDR_WORKSPACE_ID`), the next call disarms them. Unlike `stop` -- which only kills the monitors running right now and lets the automatic hook bring them straight back on the next detection or status change -- a space you disarm with `arm` stays off. The automatic hook and the coverage sweep both skip it until you `arm` that space again (or run `watch-all`, which re-arms everything including previously disarmed spaces). This is how you opt specific spaces out of the "every Claude pane, everywhere" default without disabling the plugin globally.
 
 Every herdr CLI call wraps its output in a JSON envelope, so `status` and `logs` read cleanest from herdr's UI (menu or keybinding). To read monitor activity as plain text from a shell, tail the log file directly (under herdr's plugin state directory):
 

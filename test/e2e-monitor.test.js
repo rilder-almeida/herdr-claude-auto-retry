@@ -181,3 +181,95 @@ test('one hook fire re-establishes coverage for all Claude panes (restart sweep)
     }
   }
 });
+
+// `arm` is a toggle scoped to the whole space (HERDR_WORKSPACE_ID), not a single
+// pane: first press arms every Claude pane in the space, second press disarms them.
+test('arm toggles every Claude pane in the space: off -> on -> off', async () => {
+  const t = setup();
+  t.setState({
+    panes: [
+      { pane_id: 'w1:p1', terminal_id: 't-a', agent: 'claude', agent_status: 'idle', cwd: '/proj/a', workspace_id: 'w1' },
+      { pane_id: 'w1:p2', terminal_id: 't-b', agent: 'claude', agent_status: 'idle', cwd: '/proj/b', workspace_id: 'w1' },
+    ],
+    read: 'normal prompt',
+  });
+  const armEnv = { ...t.procEnv, HERDR_PANE_ID: 'w1:p1', HERDR_WORKSPACE_ID: 'w1' };
+
+  await new Promise((resolve) => {
+    spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve);
+  });
+  const armedLocks = await waitFor(() => (t.locks().length === 2 ? t.locks() : null));
+  assert.ok(armedLocks, 'first arm call starts a monitor for every pane in the space');
+
+  await new Promise((resolve) => {
+    spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve);
+  });
+  const disarmed = await waitFor(() => t.locks().length === 0);
+  assert.ok(disarmed, 'second arm call (toggle) stops every monitor in the space');
+});
+
+// A space that shares a workspace id with an excluded/dev pane should not let the
+// toggle skip real panes just because the plugin's own pane is also present.
+test('arm toggle skips the plugin\'s own pane but still arms the rest of the space', async () => {
+  const t = setup();
+  t.setState({
+    panes: [
+      { pane_id: 'w1:p1', terminal_id: 't-dev', agent: 'claude', agent_status: 'idle', cwd: repo, workspace_id: 'w1' },
+      { pane_id: 'w1:p2', terminal_id: 't-b', agent: 'claude', agent_status: 'idle', cwd: '/proj/b', workspace_id: 'w1' },
+    ],
+    read: 'normal prompt',
+  });
+  const armEnv = { ...t.procEnv, HERDR_PANE_ID: 'w1:p2', HERDR_WORKSPACE_ID: 'w1' };
+  await new Promise((resolve) => {
+    spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve);
+  });
+  const locks = await waitFor(() => (t.locks().length === 1 ? t.locks() : null));
+  assert.ok(locks, 'the real pane gets armed');
+  assert.equal(locks[0], 't-b.json', 'only the non-dev pane is monitored');
+  for (const f of t.locks()) {
+    try {
+      process.kill(JSON.parse(readFileSync(join(t.procEnv.HERDR_PLUGIN_STATE_DIR, 'monitors', f), 'utf8')).pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
+});
+
+// The whole point of the toggle: unlike `stop` (which only kills the current
+// monitors and lets the next detection/status-change event bring them right
+// back), disarming a space via `arm` must stick -- the automatic hook and the
+// coverage sweep both have to skip it until the user arms it again.
+test('a disarmed space stays off across later automatic detections, and arm turns it back on', async () => {
+  const t = setup();
+  t.setState({
+    panes: [{ pane_id: 'w1:p1', terminal_id: 't-a', agent: 'claude', agent_status: 'idle', cwd: '/proj/a', workspace_id: 'w1' }],
+    read: 'normal prompt',
+  });
+  const armEnv = { ...t.procEnv, HERDR_PANE_ID: 'w1:p1', HERDR_WORKSPACE_ID: 'w1' };
+
+  // Arm, then disarm -- this is the toggle's off state, which must persist.
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  await waitFor(() => t.locks().length === 1);
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  await waitFor(() => t.locks().length === 0);
+
+  // Simulate what `stop` would leave broken: the pane changes state, firing the
+  // automatic hook exactly like a real turn boundary would.
+  await new Promise((resolve) => {
+    spawn(process.execPath, [MAIN, 'hook-agent-detected'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve);
+  });
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(t.locks().length, 0, 'the automatic hook must not re-arm a space the user explicitly disarmed');
+
+  // Toggling `arm` again re-enables it, including for the automatic hook.
+  await new Promise((resolve) => spawn(process.execPath, [MAIN, 'arm'], { env: armEnv, stdio: 'ignore' }).on('exit', resolve));
+  const rearmed = await waitFor(() => t.locks().length === 1);
+  assert.ok(rearmed, 'arm again clears the disarmed flag and starts a monitor');
+  for (const f of t.locks()) {
+    try {
+      process.kill(JSON.parse(readFileSync(join(t.procEnv.HERDR_PLUGIN_STATE_DIR, 'monitors', f), 'utf8')).pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+  }
+});

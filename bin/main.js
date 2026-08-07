@@ -11,7 +11,8 @@ import { createMonitorState, processOneTick } from '../src/monitor-core.js';
 import { recover } from '../src/recovery.js';
 import { stateDir } from '../src/paths.js';
 import {
-  claimSlot, touchRecord, removeRecord, listRecords, isFresh, isAlive, hasActiveMonitor, lockHeldByOther,
+  claimSlot, touchRecord, removeRecord, listRecords, isFresh, isAlive, hasActiveMonitor, lockHeldByOther, readRecord,
+  isWorkspaceDisarmed, setWorkspaceDisarmed,
 } from '../src/registry.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -95,11 +96,13 @@ async function hookAgentDetected() {
   const herdr = createHerdr();
   const pane = await herdr.paneGet(paneId);
   if (!pane || !isClaudeAgent(pane)) return;
-  if (spawnMonitor(pane) === 'spawned') {
+  if (!isWorkspaceDisarmed(pane.workspace_id) && spawnMonitor(pane) === 'spawned') {
     createLogger().info(`${paneHandle(pane)}  detected; starting monitor`);
   }
   if (sweepDue()) {
-    for (const p of await herdr.listClaudePanes()) spawnMonitor(p);
+    for (const p of await herdr.listClaudePanes()) {
+      if (!isWorkspaceDisarmed(p.workspace_id)) spawnMonitor(p);
+    }
   }
 }
 
@@ -108,6 +111,7 @@ async function watchAll() {
   const panes = await herdr.listClaudePanes();
   let spawned = 0;
   for (const pane of panes) {
+    if (isWorkspaceDisarmed(pane.workspace_id)) continue;
     if (spawnMonitor(pane) === 'spawned') spawned++;
   }
   process.stdout.write(`Claude panes found: ${panes.length}. Monitors starting: ${spawned} (others already running or skipped).\n`);
@@ -115,30 +119,47 @@ async function watchAll() {
 
 async function arm() {
   const paneId = process.env.HERDR_PANE_ID;
+  const workspaceId = process.env.HERDR_WORKSPACE_ID;
   if (!paneId) {
     process.stderr.write('arm: no focused pane (HERDR_PANE_ID unset).\n');
     process.exit(1);
   }
   const herdr = createHerdr();
-  const pane = await herdr.paneGet(paneId);
-  if (!pane) {
-    process.stderr.write(`arm: pane ${paneId} not found.\n`);
-    process.exit(1);
+  let panes;
+  if (workspaceId) {
+    panes = (await herdr.listClaudePanes()).filter((p) => p.workspace_id === workspaceId);
+  } else {
+    const pane = await herdr.paneGet(paneId);
+    panes = pane && isClaudeAgent(pane) ? [pane] : [];
   }
-  if (!isClaudeAgent(pane)) {
-    process.stdout.write(`arm: pane ${paneId} is not a Claude Code agent (agent: ${pane.agent || 'none'}); not armed.\n`);
+  if (panes.length === 0) {
+    process.stdout.write('arm: no Claude Code panes in this space.\n');
     return;
   }
-  const outcome = spawnMonitor(pane);
-  if (outcome === 'spawned') {
-    createLogger().info(`${paneHandle(pane)}  armed; starting monitor`);
+
+  const logger = createLogger();
+  const spaceLabel = workspaceId || paneId;
+  if (panes.some((p) => hasActiveMonitor(p.terminal_id))) {
+    if (workspaceId) setWorkspaceDisarmed(workspaceId, true);
+    let stopped = 0;
+    for (const p of panes) {
+      const rec = readRecord(p.terminal_id);
+      if (rec && isAlive(rec.pid)) {
+        try { process.kill(rec.pid, 'SIGTERM'); stopped++; } catch {}
+      }
+      removeRecord(p.terminal_id);
+    }
+    logger.info(`space ${spaceLabel}  disarmed (${stopped} monitor(s) stopped); won't auto-rearm until toggled on again`);
+    process.stdout.write(`Disarmed auto-retry for this space (${stopped} monitor(s) stopped). It will stay off until you toggle it back on.\n`);
+  } else {
+    if (workspaceId) setWorkspaceDisarmed(workspaceId, false);
+    let spawned = 0;
+    for (const p of panes) {
+      if (spawnMonitor(p) === 'spawned') spawned++;
+    }
+    logger.info(`space ${spaceLabel}  armed (${spawned} monitor(s) started)`);
+    process.stdout.write(`Armed auto-retry for this space (${spawned} monitor(s) started).\n`);
   }
-  const msg = {
-    spawned: `Armed auto-retry monitor on pane ${pane.pane_id}.`,
-    'already-running': `Pane ${pane.pane_id} is already being monitored.`,
-    'ignored-self': `Pane ${pane.pane_id} is the plugin's own pane; not monitored.`,
-  };
-  process.stdout.write(`${msg[outcome] || msg.spawned}\n`);
 }
 
 async function status() {
