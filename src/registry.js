@@ -1,7 +1,7 @@
 
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { monitorsDir } from './paths.js';
+import { monitorsDir, stateDir } from './paths.js';
 
 const STALE_MS = 60_000;
 
@@ -11,6 +11,36 @@ function sanitize(id) {
 
 function lockPath(terminalId) {
   return join(monitorsDir(), `${sanitize(terminalId)}.json`);
+}
+
+function disarmedPath() {
+  return join(stateDir(), 'disarmed.json');
+}
+
+function readDisarmedWorkspaces() {
+  try {
+    const list = JSON.parse(readFileSync(disarmedPath(), 'utf-8'));
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+}
+
+// Explicit per-space opt-out, set by the `arm` toggle when it disarms a space.
+// The automatic hooks (event-driven detection and the coverage sweep) check
+// this before spawning a monitor, so a space the user turned off does not come
+// back on its own the way a plain `stop` would -- only re-arming (via `arm`
+// again, or `watch-all`) clears it.
+export function isWorkspaceDisarmed(workspaceId) {
+  return !!workspaceId && readDisarmedWorkspaces().includes(workspaceId);
+}
+
+export function setWorkspaceDisarmed(workspaceId, disarmed) {
+  if (!workspaceId) return;
+  mkdirSync(stateDir(), { recursive: true });
+  const set = new Set(readDisarmedWorkspaces());
+  if (disarmed) set.add(workspaceId); else set.delete(workspaceId);
+  writeFileSync(disarmedPath(), JSON.stringify([...set], null, 2));
 }
 
 export function isAlive(pid) {

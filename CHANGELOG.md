@@ -2,6 +2,12 @@
 
 Notable changes, newest first. This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `arm` is now a per-space toggle instead of a one-way "watch this pane" action: the first call arms every Claude pane in the focused space, the next call disarms them. A space disarmed this way stays off -- the automatic event hook and the coverage sweep both skip it -- unlike `stop`, which only kills the current monitors and lets the next detection bring them right back. Re-run `arm` (or `watch-all`, which re-arms everything) to turn a space back on.
+
 ## [1.0.0] - 2026-07-02
 
 Initial release.
